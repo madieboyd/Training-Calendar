@@ -19,5 +19,8 @@
     "esbuild": "^0.19.2",
     "@types/react": "^18.2.21",
     "@types/react-dom": "^18.2.7"
-  }
+
+  "scripts": {
+  "predeploy": "npm run build",
+  "deploy": "gh-pages -d build"
 }
