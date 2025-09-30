@@ -2,6 +2,11 @@
   "name": "training-calendar",
   "version": "1.0.0",
   "description": "Training Calendar Application",
+  "homepage": "https://madieboyd.github.io/Training-Calendar/",
+  ...
+  "name": "training-calendar",
+  "version": "1.0.0",
+  "description": "Training Calendar Application",
   "main": "index.tsx",
   "scripts": {
     "build": "esbuild index.tsx --bundle --outfile=bundle.js --jsx=automatic --platform=browser --define:process.env.NODE_ENV='\"production\"'"
