@@ -5,17 +5,18 @@
   "homepage": "https://madieboyd.github.io/Training-Calendar/",
   "main": "index.tsx",
   "scripts": {
-    "build": "esbuild index.tsx --bundle --outfile=bundle.js --jsx=automatic --platform=browser --define:process.env.NODE_ENV='\"production\"'",
-    "predeploy": "npm run build",
+    "build": "esbuild index.tsx --bundle --outfile=build/bundle.js --jsx=automatic --platform=browser --define:process.env.NODE_ENV='\"production\"'",
+    "predeploy": "npm run build && cp index.html build/ && cp index.css build/",
     "deploy": "gh-pages -d build"
   },
   "dependencies": {
+    "gh-pages": "^6.3.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0"
   },
   "devDependencies": {
-    "esbuild": "^0.19.2",
     "@types/react": "^18.2.21",
-    "@types/react-dom": "^18.2.7"
+    "@types/react-dom": "^18.2.7",
+    "esbuild": "^0.19.2"
   }
 }
