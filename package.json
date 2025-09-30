@@ -1,21 +1,18 @@
 {
-  "name": "training-calendar---test",
-  "private": true,
-  "version": "0.0.0",
-  "type": "module",
+  "name": "training-calendar",
+  "version": "1.0.0",
+  "description": "Training Calendar Application",
+  "main": "index.tsx",
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "preview": "vite preview"
+    "build": "esbuild index.tsx --bundle --outfile=public/bundle.js --jsx=automatic --platform=browser --define:process.env.NODE_ENV='\"production\"'"
   },
   "dependencies": {
-    "react-dom": "^19.1.1",
-    "react": "^19.1.1"
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
   },
   "devDependencies": {
-    "@types/node": "^22.14.0",
-    "@vitejs/plugin-react": "^5.0.0",
-    "typescript": "~5.8.2",
-    "vite": "^6.2.0"
+    "esbuild": "^0.19.2",
+    "@types/react": "^18.2.21",
+    "@types/react-dom": "^18.2.7"
   }
 }
