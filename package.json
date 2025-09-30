@@ -4,7 +4,7 @@
   "description": "Training Calendar Application",
   "main": "index.tsx",
   "scripts": {
-    "build": "esbuild index.tsx --bundle --outfile=public/bundle.js --jsx=automatic --platform=browser --define:process.env.NODE_ENV='\"production\"'"
+    "build": "esbuild index.tsx --bundle --outfile=bundle.js --jsx=automatic --platform=browser --define:process.env.NODE_ENV='\"production\"'"
   },
   "dependencies": {
     "react": "^18.2.0",
