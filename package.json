@@ -6,7 +6,7 @@
   "main": "index.tsx",
   "scripts": {
     "build": "esbuild index.tsx --bundle --outfile=build/bundle.js --jsx=automatic --platform=browser --define:process.env.NODE_ENV='\"production\"'",
-    "predeploy": "npm run build && cp index.html build/ && cp index.css build/",
+    "predeploy": "mkdir -p build && npm run build && cp index.html build/ && cp index.css build/",
     "deploy": "gh-pages -d build"
   },
   "dependencies": {
