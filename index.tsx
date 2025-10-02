@@ -3,8 +3,12 @@
  * SPDX-License-Identifier: Apache-2.0
 */
 
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
+import type { Database } from 'sql.js';
+
+// sql.js is loaded from a CDN in index.html
+declare const initSqlJs: (config?: any) => Promise<any>;
 
 type TrainingEvent = {
   id: number;
@@ -13,18 +17,6 @@ type TrainingEvent = {
   time: string;
   notes: string;
   shiftLead: string;
-};
-
-// FIX: Changed squadId index signature from number to string. JavaScript object
-// keys are implicitly strings, and this more accurate typing helps TypeScript's
-// inference engine correctly type the result of Object.values(), fixing an error
-// where a property was accessed on an `unknown` type.
-type SquadSchedule = {
-  [squadId: string]: TrainingEvent[];
-};
-
-type CalendarData = {
-  [dateKey: string]: SquadSchedule;
 };
 
 type ViewMode = 'year' | 'month' | 'week';
@@ -264,6 +256,25 @@ const trainingPlan: ScheduledTask[] = [
   { week: 52, squad: 4, metl: '3-3.3.7', task: 'O/M Optical Power Test Set' },
 ];
 
+const squads = [
+    { name: 'Squad 1', id: 1 },
+    { name: 'Squad 2', id: 2 },
+    { name: 'Squad 3', id: 3 },
+    { name: 'Squad 4', id: 4 },
+];
+
+const getDateKey = (date: Date) => date.toISOString().split('T')[0];
+
+const getFiscalYearInfo = (year: number) => {
+    const fiscalYearStartDate = new Date(year - 1, 9, 1); // Month is 0-indexed, so 9 is October
+    let firstWeekStartDate = new Date(fiscalYearStartDate);
+    firstWeekStartDate.setHours(0,0,0,0);
+    // Find the first Monday on or after October 1st
+    while (firstWeekStartDate.getDay() !== 1) { // 1 is Monday
+      firstWeekStartDate.setDate(firstWeekStartDate.getDate() + 1);
+    }
+    return { fiscalYearStartDate, firstWeekStartDate };
+};
 
 const DisclaimerModal: React.FC<{ onAcknowledge: () => void }> = ({ onAcknowledge }) => (
   <div className="disclaimer-overlay">
@@ -284,6 +295,135 @@ const DisclaimerModal: React.FC<{ onAcknowledge: () => void }> = ({ onAcknowledg
   </div>
 );
 
+const DatabaseSetupModal: React.FC = () => {
+    const [generating, setGenerating] = useState(false);
+
+    const handleGenerateAndDownload = async () => {
+        setGenerating(true);
+        try {
+            const SQL = await initSqlJs({ locateFile: file => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/${file}` });
+            const db = new SQL.Database();
+            
+            const createTableStmt = `
+                CREATE TABLE events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    date TEXT,
+                    squad_id INTEGER,
+                    activity TEXT,
+                    time TEXT,
+                    shift_lead TEXT,
+                    notes TEXT,
+                    status TEXT
+                );
+            `;
+            db.run(createTableStmt);
+            
+            const { firstWeekStartDate } = getFiscalYearInfo(new Date().getFullYear() + (new Date().getMonth() >= 9 ? 1 : 0));
+
+            trainingPlan.forEach(task => {
+                const taskDate = new Date(firstWeekStartDate);
+                taskDate.setDate(taskDate.getDate() + (task.week - 1) * 7);
+                const dateKey = getDateKey(taskDate);
+
+                const stmt = db.prepare("INSERT INTO events (date, squad_id, activity, time, shift_lead, notes, status) VALUES (?, ?, ?, ?, ?, ?, ?)");
+                stmt.bind([
+                    dateKey,
+                    task.squad,
+                    `${task.metl} - ${task.task}`,
+                    'TBD',
+                    '',
+                    'Auto-scheduled training for the week.',
+                    'Scheduled'
+                ]);
+                stmt.step();
+                stmt.free();
+            });
+
+            const data = db.export();
+            const blob = new Blob([data], { type: "application/x-sqlite3" });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'training_calendar.db';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        } catch (err) {
+            console.error("Failed to generate database", err);
+            alert("An error occurred while generating the database. See the console for details.");
+        } finally {
+            setGenerating(false);
+        }
+    };
+
+    return (
+        <div className="disclaimer-overlay">
+            <div className="disclaimer-modal">
+                <h2>One-Time Setup Required</h2>
+                <p>This application uses a shared SQLite database file (`training_calendar.db`) to show the same schedule to all users. The file was not found on the server.</p>
+                <p className="warning">
+                    <strong>Action Required:</strong>
+                    <ol>
+                        <li>Click the button below to generate and download the database file based on the default METL schedule.</li>
+                        <li>Add the downloaded <strong>`training_calendar.db`</strong> file to the root of your project.</li>
+                        <li>Commit the file and redeploy the application.</li>
+                    </ol>
+                </p>
+                <p>Once the file is deployed, this message will disappear and the calendar will load for everyone.</p>
+                <button onClick={handleGenerateAndDownload} className="acknowledge-btn" disabled={generating}>
+                    {generating ? 'Generating...' : 'Generate and Download Database'}
+                </button>
+            </div>
+        </div>
+    );
+};
+
+// Component to render events for a specific squad on a specific day
+const SquadEvents: React.FC<{ db: Database, dateKey: string, squadId: number, searchQuery: string }> = ({ db, dateKey, squadId, searchQuery }) => {
+    const [events, setEvents] = useState<TrainingEvent[]>([]);
+
+    useEffect(() => {
+        try {
+            // FIX: Aliased 'shift_lead' to 'shiftLead' to match the TrainingEvent type.
+            const stmt = db.prepare("SELECT id, status, activity, time, notes, shift_lead as shiftLead FROM events WHERE date = :date AND squad_id = :squad_id");
+            stmt.bind({ ':date': dateKey, ':squad_id': squadId });
+            const newEvents: TrainingEvent[] = [];
+            while (stmt.step()) {
+                newEvents.push(stmt.getAsObject() as TrainingEvent);
+            }
+            stmt.free();
+            setEvents(newEvents);
+        } catch (err) {
+            console.error(`Failed to fetch events for ${dateKey}, squad ${squadId}`, err);
+        }
+    }, [db, dateKey, squadId]);
+
+    if (events.length === 0) {
+        return <ul className="event-list" aria-live="polite"></ul>;
+    }
+
+    return (
+        <ul className="event-list" aria-live="polite">
+            {events.map((ev) => {
+                const query = searchQuery.toLowerCase();
+                const isVisible = query === '' || ev.activity.toLowerCase().includes(query) || ev.notes.toLowerCase().includes(query) || ev.shiftLead.toLowerCase().includes(query);
+                return (
+                    <li key={ev.id} className={`event-item status-${ev.status.toLowerCase()} ${!isVisible ? 'event-hidden' : ''}`}>
+                        <div className="event-header">
+                            <strong className="event-name">{ev.activity}</strong>
+                            <span className="event-status-badge">{ev.status}</span>
+                        </div>
+                        <div className="event-details"><span>Time: {ev.time || 'N/A'}</span> | <span>Lead: {ev.shiftLead || 'N/A'}</span></div>
+                        {ev.notes && <p className="event-notes">{ev.notes}</p>}
+                    </li>
+                );
+            })}
+        </ul>
+    );
+};
+
+
 const App: React.FC = () => {
   const [currentDate, setCurrentDate] = useState(new Date());
   const [searchQuery, setSearchQuery] = useState('');
@@ -296,56 +436,47 @@ const App: React.FC = () => {
   const [exportStartDate, setExportStartDate] = useState('');
   const [exportEndDate, setExportEndDate] = useState('');
   const [exportFormat, setExportFormat] = useState<'json' | 'csv'>('json');
-  const [showGenerateModal, setShowGenerateModal] = useState(false);
-  const [fiscalYear, setFiscalYear] = useState(new Date().getFullYear() + (new Date().getMonth() >= 9 ? 1 : 0));
-  const [showCreateEventModal, setShowCreateEventModal] = useState(false);
-  const [newEventData, setNewEventData] = useState({
-    date: new Date().toISOString().split('T')[0],
-    activity: '',
-    time: 'TBD',
-    shiftLead: '',
-    notes: '',
-    status: 'Scheduled',
-  });
-  const [selectedSquads, setSelectedSquads] = useState<number[]>([]);
+
+  const [db, setDb] = useState<Database | null>(null);
+  const [dbState, setDbState] = useState<'loading' | 'ready' | 'setup' | 'error'>('loading');
   
-  const squads = [
-    { name: 'Squad 1', id: 1 },
-    { name: 'Squad 2', id: 2 },
-    { name: 'Squad 3', id: 3 },
-    { name: 'Squad 4', id: 4 },
-  ];
-  const trainingStatuses = ['Scheduled', 'Complete', 'Incomplete', 'Missed'];
   const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
   const dayNames = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-
-  const getDateKey = (date: Date) => date.toISOString().split('T')[0];
-
-  const [calendar, setCalendar] = useState<CalendarData>(() => {
-    try {
-      const savedData = localStorage.getItem('trainingCalendarData');
-      return savedData ? JSON.parse(savedData) : {};
-    } catch (error) {
-      console.error("Error loading calendar data from localStorage", error);
-      return {};
-    }
-  });
-
-  const [lastEdited, setLastEdited] = useState<Date | null>(() => {
-      try {
-        const savedTimestamp = localStorage.getItem('trainingCalendarLastEdited');
-        return savedTimestamp ? new Date(savedTimestamp) : null;
-      } catch (error) {
-        console.error("Error loading last saved timestamp from localStorage", error);
-        return null;
-      }
-  });
 
   useEffect(() => {
     const isAcknowledged = sessionStorage.getItem('disclaimerAcknowledged');
     if (!isAcknowledged) {
       setShowDisclaimer(true);
     }
+  }, []);
+
+  useEffect(() => {
+    async function initDb() {
+        try {
+            const dbFileResponse = await fetch('/training_calendar.db');
+            if (!dbFileResponse.ok) {
+                setDbState('setup');
+                return;
+            }
+            
+            const wasmUrl = new URL(`https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/sql-wasm.wasm`, import.meta.url);
+            const SQL = await initSqlJs({ wasmUrl });
+            const dbBuffer = await dbFileResponse.arrayBuffer();
+            const initializedDb = new SQL.Database(new Uint8Array(dbBuffer));
+            setDb(initializedDb);
+            setDbState('ready');
+
+        } catch (err) {
+            console.error("Database initialization failed:", err);
+            // A TypeError often indicates a network issue, which for our purposes includes a 404
+            if (err instanceof TypeError) { 
+                setDbState('setup');
+            } else {
+                setDbState('error');
+            }
+        }
+    }
+    initDb();
   }, []);
   
   useEffect(() => {
@@ -363,9 +494,6 @@ const App: React.FC = () => {
     sessionStorage.setItem('disclaimerAcknowledged', 'true');
     setShowDisclaimer(false);
   };
-
-  const [editingEventId, setEditingEventId] = useState<number | null>(null);
-  const [editingEventData, setEditingEventData] = useState<Partial<TrainingEvent>>({});
 
   const today = useMemo(() => {
     const d = new Date();
@@ -431,19 +559,6 @@ const App: React.FC = () => {
     if (viewMode === 'week') return generateWeekDays(currentDate);
     return [];
   }, [currentDate, viewMode]);
-  
-  const handleSave = () => {
-    try {
-      const newTimestamp = new Date();
-      localStorage.setItem('trainingCalendarData', JSON.stringify(calendar));
-      localStorage.setItem('trainingCalendarLastEdited', newTimestamp.toISOString());
-      setLastEdited(newTimestamp);
-      alert('Calendar saved successfully!');
-    } catch (error) {
-      console.error("Failed to save calendar data", error);
-      alert("Error: Could not save calendar. Your browser's storage may be full.");
-    }
-  };
 
   const handleOpenPrintModal = () => {
       setShowPrintRangeModal(true);
@@ -464,74 +579,13 @@ const App: React.FC = () => {
     }, 100);
   }
 
-  const getFiscalYearInfo = (year: number) => {
-    const fiscalYearStartDate = new Date(year - 1, 9, 1); // Month is 0-indexed, so 9 is October
-    let firstWeekStartDate = new Date(fiscalYearStartDate);
-    firstWeekStartDate.setHours(0,0,0,0);
-    // Find the first Monday on or after October 1st
-    while (firstWeekStartDate.getDay() !== 1) { // 1 is Monday
-      firstWeekStartDate.setDate(firstWeekStartDate.getDate() + 1);
-    }
-    return { fiscalYearStartDate, firstWeekStartDate };
-  };
-
-  const handleGenerateSchedule = () => {
-    const { fiscalYearStartDate, firstWeekStartDate } = getFiscalYearInfo(fiscalYear);
-    const fiscalYearEndDate = new Date(fiscalYearStartDate);
-    fiscalYearEndDate.setFullYear(fiscalYearEndDate.getFullYear() + 1);
-    fiscalYearEndDate.setDate(fiscalYearEndDate.getDate() - 1);
-
-    const clearedCalendar = { ...calendar };
-    Object.keys(clearedCalendar).forEach(dateKey => {
-      // The dateKey is 'YYYY-MM-DD'. Creating a new Date from this string can be
-      // timezone-sensitive. To ensure a correct comparison, we parse the components
-      // and create a date at midnight in the user's local timezone, which is
-      // consistent with how fiscalYearStartDate and fiscalYearEndDate are created.
-      const parts = dateKey.split('-').map(Number);
-      const d = new Date(parts[0], parts[1] - 1, parts[2]);
-
-      if (d >= fiscalYearStartDate && d <= fiscalYearEndDate) {
-          delete clearedCalendar[dateKey];
-      }
-    });
-
-    const newCalendarData = { ...clearedCalendar };
-    let eventIdCounter = Date.now();
-
-    trainingPlan.forEach(task => {
-      const taskDate = new Date(firstWeekStartDate);
-      taskDate.setDate(taskDate.getDate() + (task.week - 1) * 7);
-      const dateKey = getDateKey(taskDate);
-
-      const newEvent: TrainingEvent = {
-        id: eventIdCounter++,
-        activity: `${task.metl} - ${task.task}`,
-        time: 'TBD',
-        shiftLead: '',
-        notes: 'Auto-scheduled training for the week.',
-        status: 'Scheduled',
-      };
-
-      const daySchedule = newCalendarData[dateKey] || {};
-      const squadEvents = daySchedule[task.squad] || [];
-      
-      squadEvents.push(newEvent);
-      daySchedule[task.squad] = squadEvents;
-      newCalendarData[dateKey] = daySchedule;
-    });
-    
-    setCalendar(newCalendarData);
-    setShowGenerateModal(false);
-    alert(`FY${fiscalYear} METL training schedule has been generated. Please review and click "Save Calendar" to persist changes.`);
-  };
-
   const handleOpenExportModal = () => {
     setShowExportModal(true);
   };
 
   const handleExportData = () => {
-    if (!exportStartDate || !exportEndDate) {
-      alert("Please select a valid start and end date.");
+    if (!exportStartDate || !exportEndDate || !db) {
+      alert("Please select a valid date range. Database must be loaded.");
       return;
     }
     if (exportStartDate > exportEndDate) {
@@ -539,21 +593,23 @@ const App: React.FC = () => {
       return;
     }
 
-    const dataToExport: CalendarData = {};
-    Object.keys(calendar)
-      .sort()
-      .forEach(dateKey => {
-        if (dateKey >= exportStartDate && dateKey <= exportEndDate) {
-          dataToExport[dateKey] = calendar[dateKey];
-        }
-      });
+    // FIX: Aliased 'shift_lead' to 'shiftLead' to match the TrainingEvent type.
+    const stmt = db.prepare("SELECT date, squad_id, activity, time, shift_lead as shiftLead, status, notes FROM events WHERE date >= :start AND date <= :end ORDER BY date, squad_id");
+    stmt.bind({ ':start': exportStartDate, ':end': exportEndDate });
+    
+    const eventsToExport: (TrainingEvent & { date: string; squad_id: number })[] = [];
+    while (stmt.step()) {
+        const row = stmt.getAsObject();
+        eventsToExport.push(row as any);
+    }
+    stmt.free();
     
     let fileContent: string;
     let mimeType: string;
     let fileExtension: string;
 
     if (exportFormat === 'json') {
-      fileContent = JSON.stringify(dataToExport, null, 2);
+      fileContent = JSON.stringify(eventsToExport, null, 2);
       mimeType = 'application/json';
       fileExtension = 'json';
     } else { // 'csv'
@@ -568,25 +624,20 @@ const App: React.FC = () => {
       };
 
       const csvRows = [headers.join(',')];
-      for (const dateKey in dataToExport) {
-        const daySchedule = dataToExport[dateKey];
-        for (const squadId in daySchedule) {
-          const squadName = squads.find(s => s.id.toString() === squadId)?.name || `Squad ${squadId}`;
-          const events = daySchedule[squadId];
-          events.forEach(ev => {
-            const row = [
-              dateKey,
-              squadName,
-              escapeCsvField(ev.activity),
-              escapeCsvField(ev.time),
-              escapeCsvField(ev.shiftLead),
-              escapeCsvField(ev.status),
-              escapeCsvField(ev.notes),
-            ];
-            csvRows.push(row.join(','));
-          });
-        }
-      }
+      eventsToExport.forEach(ev => {
+          const squadName = squads.find(s => s.id === ev.squad_id)?.name || `Squad ${ev.squad_id}`;
+          const row = [
+            ev.date,
+            squadName,
+            escapeCsvField(ev.activity),
+            escapeCsvField(ev.time),
+            // FIX: Changed property access from 'shift_lead' to 'shiftLead' to match the aliased column and TrainingEvent type.
+            escapeCsvField(ev.shiftLead),
+            escapeCsvField(ev.status),
+            escapeCsvField(ev.notes),
+          ];
+          csvRows.push(row.join(','));
+      });
       fileContent = csvRows.join('\n');
       mimeType = 'text/csv;charset=utf-8;';
       fileExtension = 'csv';
@@ -623,147 +674,45 @@ const App: React.FC = () => {
     setCurrentDate(newDate);
   };
   
-  const handleStatusChange = (date: Date, squadId: number, eventId: number, newStatus: string) => {
-    const dateKey = getDateKey(date);
-    setCalendar(prev => {
-      if (!prev[dateKey]) return prev;
-      const updatedCalendar = { ...prev };
-      const updatedDay = { ...updatedCalendar[dateKey] };
-      const updatedSquadEvents = updatedDay[squadId].map(ev => ev.id === eventId ? { ...ev, status: newStatus } : ev);
-      updatedDay[squadId] = updatedSquadEvents;
-      updatedCalendar[dateKey] = updatedDay;
-      return updatedCalendar;
-    });
-  };
-
-  const handleEditStart = (event: TrainingEvent) => {
-    setEditingEventId(event.id);
-    setEditingEventData(event);
-  };
-
-  const handleEditCancel = () => {
-    setEditingEventId(null);
-    setEditingEventData({});
-  };
-  
-  const handleEditInputChange = (field: keyof Omit<TrainingEvent, 'id'>, value: string) => {
-    setEditingEventData(prev => ({ ...prev, [field]: value }));
-  };
-
-  const handleEditSave = (date: Date, squadId: number, eventId: number) => {
-    const dateKey = getDateKey(date);
-    setCalendar(prev => {
-      if (!prev[dateKey]) return prev;
-      const updatedCalendar = { ...prev };
-      const updatedDay = { ...updatedCalendar[dateKey] };
-      const updatedSquadEvents = updatedDay[squadId].map(ev => ev.id === eventId ? { ...editingEventData } as TrainingEvent : ev);
-      updatedDay[squadId] = updatedSquadEvents;
-      updatedCalendar[dateKey] = updatedDay;
-      return updatedCalendar;
-    });
-    handleEditCancel();
-  };
-
-  const handleNewEventInputChange = (field: keyof typeof newEventData, value: string) => {
-    setNewEventData(prev => ({ ...prev, [field]: value }));
-  };
-
-  const handleSquadSelection = (squadId: number) => {
-    setSelectedSquads(prev =>
-      prev.includes(squadId)
-        ? prev.filter(id => id !== squadId)
-        : [...prev, squadId]
-    );
-  };
-  
-  const handleSelectAllSquads = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.checked) {
-      setSelectedSquads(squads.map(s => s.id));
-    } else {
-      setSelectedSquads([]);
-    }
-  };
-  
-  const handleCreateEvent = () => {
-    if (!newEventData.activity.trim()) {
-      alert("Activity field cannot be empty.");
-      return;
-    }
-    if (selectedSquads.length === 0) {
-      alert("Please select at least one squad.");
-      return;
-    }
-
-    setCalendar(prevCalendar => {
-        const newCalendar = { ...prevCalendar };
-        const dateKey = newEventData.date;
-        const daySchedule = newCalendar[dateKey] ? { ...newCalendar[dateKey] } : {};
-
-        selectedSquads.forEach(squadId => {
-            const newEvent: TrainingEvent = {
-                id: Date.now() + squadId, // simple unique id
-                activity: newEventData.activity,
-                time: newEventData.time,
-                shiftLead: newEventData.shiftLead,
-                notes: newEventData.notes,
-                status: newEventData.status as 'Scheduled' | 'Complete' | 'Incomplete' | 'Missed',
-            };
-            const squadEvents = daySchedule[squadId] ? [...daySchedule[squadId]] : [];
-            squadEvents.push(newEvent);
-            daySchedule[squadId] = squadEvents;
-        });
-
-        newCalendar[dateKey] = daySchedule;
-        return newCalendar;
-    });
-
-    handleCloseCreateModal();
-  };
-
-  const handleCloseCreateModal = () => {
-      setShowCreateEventModal(false);
-      setNewEventData({
-          date: new Date().toISOString().split('T')[0],
-          activity: '',
-          time: 'TBD',
-          shiftLead: '',
-          notes: '',
-          status: 'Scheduled',
-      });
-      setSelectedSquads([]);
-  };
-  
   const printableEvents = useMemo(() => {
-    if (!printStartDate || !printEndDate) return [];
+    if (!printStartDate || !printEndDate || !db) return [];
     
-    const events = [];
-    const sortedDateKeys = Object.keys(calendar).sort();
-    
-    const start = new Date(printStartDate);
-    const end = new Date(printEndDate);
+    // FIX: Aliased 'shift_lead' to 'shiftLead' to match the TrainingEvent type.
+    const stmt = db.prepare("SELECT date, squad_id, activity, time, shift_lead as shiftLead, status, notes FROM events WHERE date >= :start AND date <= :end ORDER BY date, squad_id");
+    stmt.bind({ ':start': printStartDate, ':end': printEndDate });
 
-    for (const dateKey of sortedDateKeys) {
-        const date = new Date(dateKey); 
-        
-        if (date < start || date > end) {
-            continue;
-        }
-        
-        const daySchedule = calendar[dateKey];
-        if (daySchedule) {
-            const eventsForDay = [];
-            squads.forEach(squad => {
-                if (daySchedule[squad.id] && daySchedule[squad.id].length > 0) {
-                    eventsForDay.push({ squadName: squad.name, events: daySchedule[squad.id] });
-                }
-            });
-            if (eventsForDay.length > 0) {
-                events.push({ date: date, squadEvents: eventsForDay });
-            }
-        }
+    const flatEvents: (TrainingEvent & { date: string, squad_id: number })[] = [];
+    while (stmt.step()) {
+        flatEvents.push(stmt.getAsObject() as any);
     }
-    return events;
-  }, [calendar, squads, printStartDate, printEndDate]);
+    stmt.free();
+
+    const groupedEvents: { date: Date, squadEvents: { squadName: string, events: TrainingEvent[] }[] }[] = [];
+    const eventsByDate: { [dateKey: string]: { [squadId: string]: TrainingEvent[] } } = {};
+    
+    flatEvents.forEach(ev => {
+        if (!eventsByDate[ev.date]) eventsByDate[ev.date] = {};
+        if (!eventsByDate[ev.date][ev.squad_id]) eventsByDate[ev.date][ev.squad_id] = [];
+        eventsByDate[ev.date][ev.squad_id].push(ev);
+    });
+
+    Object.keys(eventsByDate).sort().forEach(dateKey => {
+        const parts = dateKey.split('-').map(Number);
+        const date = new Date(parts[0], parts[1] - 1, parts[2]);
+        const daySchedule = eventsByDate[dateKey];
+        const eventsForDay = [];
+        squads.forEach(squad => {
+            if (daySchedule[squad.id] && daySchedule[squad.id].length > 0) {
+                eventsForDay.push({ squadName: squad.name, events: daySchedule[squad.id] });
+            }
+        });
+        if (eventsForDay.length > 0) {
+            groupedEvents.push({ date, squadEvents: eventsForDay });
+        }
+    });
+
+    return groupedEvents;
+  }, [db, squads, printStartDate, printEndDate]);
 
   const renderCurrentDateHeader = () => {
     if (viewMode === 'year') {
@@ -778,9 +727,15 @@ const App: React.FC = () => {
       return `${weekStart.toLocaleDateString()} - ${weekEnd.toLocaleDateString()}`;
     }
   }
-  
+
   const renderCalendarView = () => {
+    if(dbState === 'loading') return <div className="app-status">Loading Database...</div>
+    if(dbState === 'error') return <div className="app-status error">Error loading database. Please check the console for details and ensure `training_calendar.db` is accessible.</div>
+    if(dbState !== 'ready' || !db) return null;
+
     if(viewMode === 'year') {
+        // Year view would require more complex querying for event presence.
+        // For now, it will be a simple view without event indicators.
         return (
             <div className="year-view">
                 {monthNames.map((month, monthIndex) => {
@@ -795,14 +750,9 @@ const App: React.FC = () => {
                             <div className="year-month-days">
                                 {days.map(day => {
                                     const dateKey = getDateKey(day);
-                                    // FIX: Added Array.isArray(s) check. This acts as a type guard,
-                                    // preventing a runtime error and satisfying TypeScript's static analysis, which
-                                    // was previously unable to infer that 's' was an array due to limitations with
-                                    // Object.values() on types with index signatures.
-                                    const hasEvents = calendar[dateKey] && Object.values(calendar[dateKey]).some(s => Array.isArray(s) && s.length > 0);
                                     const isTodayClass = getDateKey(day) === getDateKey(today) ? 'today' : '';
                                     const isCurrentMonthClass = day.getMonth() === monthIndex ? '' : 'not-current-month';
-                                    return <div key={dateKey} className={`year-day ${isTodayClass} ${isCurrentMonthClass} ${hasEvents ? 'has-events' : ''}`}></div>
+                                    return <div key={dateKey} className={`year-day ${isTodayClass} ${isCurrentMonthClass}`}></div>
                                 })}
                             </div>
                         </div>
@@ -820,7 +770,6 @@ const App: React.FC = () => {
             {calendarDays.map((date, index) => {
                 const dateKey = getDateKey(date);
                 const isCurrentMonth = date.getMonth() === currentDate.getMonth();
-                const daySchedule = calendar[dateKey];
                 const weekIndex = Math.floor(index / 7);
                 const isAltWeek = weekIndex % 2 !== 0;
                 const isCurrentWeek = date >= startOfWeek && date <= endOfWeek;
@@ -836,40 +785,9 @@ const App: React.FC = () => {
                     {squads.map((squad) => {
                     return (
                         <section key={squad.id} className={`squad-section squad-${squad.id}`} aria-label={`Training for ${squad.name} on ${date.toDateString()}`}>
-                        <h3 className="squad-title">{squad.name}</h3>
-                        <ul className="event-list" aria-live="polite">
-                            {daySchedule?.[squad.id]?.map((ev) => {
-                                const query = searchQuery.toLowerCase();
-                                const isVisible = query === '' || ev.activity.toLowerCase().includes(query) || ev.notes.toLowerCase().includes(query) || ev.shiftLead.toLowerCase().includes(query);
-                                return (
-                                <li key={ev.id} className={`event-item status-${ev.status.toLowerCase()} ${!isVisible ? 'event-hidden' : ''}`}>
-                                    {editingEventId === ev.id ? (
-                                    <div className="edit-event-form">
-                                        <div className="form-group"><input type="text" readOnly className="form-control" value={editingEventData.activity} onChange={(e) => handleEditInputChange('activity', e.target.value)} placeholder="Activity" /></div>
-                                        <div className="form-group"><select className="form-control" value={editingEventData.status} onChange={(e) => handleEditInputChange('status', e.target.value)}>{trainingStatuses.map(status => <option key={status} value={status}>{status}</option>)}</select></div>
-                                        <div className="form-group"><input type="text" className="form-control" value={editingEventData.time} onChange={(e) => handleEditInputChange('time', e.target.value)} placeholder="Time" /></div>
-                                        <div className="form-group"><input type="text" className="form-control" value={editingEventData.shiftLead} onChange={(e) => handleEditInputChange('shiftLead', e.target.value)} placeholder="Shift Lead" /></div>
-                                        <div className="form-group"><textarea className="form-control" value={editingEventData.notes} onChange={(e) => handleEditInputChange('notes', e.target.value)} placeholder="Notes / Objectives" rows={1}></textarea></div>
-                                        <div className="event-actions"><button className="save-btn" onClick={() => handleEditSave(date, squad.id, ev.id)}>Save</button><button className="cancel-btn" onClick={handleEditCancel}>Cancel</button></div>
-                                    </div>
-                                    ) : (
-                                    <>
-                                        <div className="event-header">
-                                        <strong className="event-name">{ev.activity}</strong>
-                                        <select className="event-status-select" value={ev.status} onChange={(e) => handleStatusChange(date, squad.id, ev.id, e.target.value)} aria-label={`Change status for ${ev.activity}`}>
-                                            {trainingStatuses.map(status => (<option key={status} value={status}>{status}</option>))}
-                                        </select>
-                                        </div>
-                                        <div className="event-details"><span>Time: {ev.time || 'N/A'}</span> | <span>Lead: {ev.shiftLead || 'N/A'}</span></div>
-                                        {ev.notes && <p className="event-notes">{ev.notes}</p>}
-                                        <div className="event-actions"><button onClick={() => handleEditStart(ev)} className="edit-event-btn" aria-label={`Edit ${ev.activity}`}>Edit</button></div>
-                                    </>
-                                    )}
-                                </li>
-                                );
-                            })}
-                        </ul>
-                    </section>
+                            <h3 className="squad-title">{squad.name}</h3>
+                            <SquadEvents db={db} dateKey={dateKey} squadId={squad.id} searchQuery={searchQuery} />
+                        </section>
                     );
                 })}
                 </div>
@@ -882,6 +800,7 @@ const App: React.FC = () => {
   return (
     <>
       {showDisclaimer && <DisclaimerModal onAcknowledge={handleAcknowledge} />}
+      {dbState === 'setup' && <DatabaseSetupModal />}
       {showPrintRangeModal && (
         <div className="disclaimer-overlay">
             <div className="print-range-modal">
@@ -899,26 +818,6 @@ const App: React.FC = () => {
                 <div className="modal-actions">
                     <button onClick={() => setShowPrintRangeModal(false)} className="cancel-btn">Cancel</button>
                     <button onClick={handlePrint} className="action-btn">Print</button>
-                </div>
-            </div>
-        </div>
-      )}
-      {showGenerateModal && (
-        <div className="disclaimer-overlay">
-            <div className="generate-modal">
-                <h2>Generate METL Schedule</h2>
-                <div className="generate-form">
-                    <div className="form-group">
-                        <label htmlFor="fiscal-year">Fiscal Year (e.g., 2025 for FY25)</label>
-                        <input id="fiscal-year" type="number" className="form-control" value={fiscalYear} onChange={e => setFiscalYear(Number(e.target.value))} />
-                    </div>
-                    <p className="modal-warning">
-                        <strong>Warning:</strong> This will remove all events within the selected fiscal year (Oct 1 - Sep 30) and replace them with the standard METL schedule. This action cannot be undone.
-                    </p>
-                </div>
-                <div className="modal-actions">
-                    <button onClick={() => setShowGenerateModal(false)} className="cancel-btn">Cancel</button>
-                    <button onClick={handleGenerateSchedule} className="action-btn">Generate</button>
                 </div>
             </div>
         </div>
@@ -951,58 +850,10 @@ const App: React.FC = () => {
           </div>
         </div>
       )}
-       {showCreateEventModal && (
-        <div className="disclaimer-overlay">
-          <div className="create-modal">
-            <h2>Create Custom Event</h2>
-            <div className="create-form">
-              <div className="form-group">
-                <label htmlFor="event-date">Date</label>
-                <input id="event-date" type="date" className="form-control" value={newEventData.date} onChange={(e) => handleNewEventInputChange('date', e.target.value)} />
-              </div>
-              <div className="form-group">
-                <label htmlFor="event-activity">Activity</label>
-                <input id="event-activity" type="text" className="form-control" value={newEventData.activity} onChange={(e) => handleNewEventInputChange('activity', e.target.value)} placeholder="e.g., Weapons Cleaning" />
-              </div>
-              <div className="form-group">
-                <label htmlFor="event-squads">Squads</label>
-                <div className="squad-selector-group">
-                  <div className="squad-selector-item">
-                    <input type="checkbox" id="all-squads" onChange={handleSelectAllSquads} checked={selectedSquads.length === squads.length} />
-                    <label htmlFor="all-squads">All Squads</label>
-                  </div>
-                  {squads.map(squad => (
-                    <div key={squad.id} className="squad-selector-item">
-                      <input type="checkbox" id={`squad-${squad.id}`} checked={selectedSquads.includes(squad.id)} onChange={() => handleSquadSelection(squad.id)} />
-                      <label htmlFor={`squad-${squad.id}`}>{squad.name}</label>
-                    </div>
-                  ))}
-                </div>
-              </div>
-              <div className="form-group">
-                <label htmlFor="event-time">Time</label>
-                <input id="event-time" type="text" className="form-control" value={newEventData.time} onChange={(e) => handleNewEventInputChange('time', e.target.value)} />
-              </div>
-              <div className="form-group">
-                <label htmlFor="event-lead">Shift Lead</label>
-                <input id="event-lead" type="text" className="form-control" value={newEventData.shiftLead} onChange={(e) => handleNewEventInputChange('shiftLead', e.target.value)} />
-              </div>
-              <div className="form-group">
-                <label htmlFor="event-notes">Notes</label>
-                <textarea id="event-notes" className="form-control" value={newEventData.notes} onChange={(e) => handleNewEventInputChange('notes', e.target.value)}></textarea>
-              </div>
-            </div>
-            <div className="modal-actions">
-              <button onClick={handleCloseCreateModal} className="cancel-btn">Cancel</button>
-              <button onClick={handleCreateEvent} className="action-btn">Add Event</button>
-            </div>
-          </div>
-        </div>
-      )}
       <div className="classification-banner top-banner">UNCLASSIFIED</div>
       <header>
         <h1>Training Calendar</h1>
-        <div className="last-edited-timestamp">{lastEdited ? `Last Saved: ${lastEdited.toLocaleString()}` : 'No changes saved yet.'}</div>
+        <div className="last-edited-timestamp">Shared Read-Only Schedule</div>
         <div className="calendar-controls">
            <input type="search" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder="Search events..." className="search-input" aria-label="Search training events"/>
             <div className="navigation-controls">
@@ -1017,9 +868,6 @@ const App: React.FC = () => {
                 <button onClick={() => setViewMode('week')} className={`view-btn ${viewMode === 'week' ? 'active' : ''}`}>Week</button>
             </div>
            <div className="main-actions">
-              <button onClick={handleSave} className="action-btn">Save Calendar</button>
-              <button onClick={() => setShowCreateEventModal(true)} className="action-btn">Create Event</button>
-              <button onClick={() => setShowGenerateModal(true)} className="action-btn">Generate METL Schedule</button>
               <button onClick={handleOpenPrintModal} className="action-btn">Print Calendar</button>
               <button onClick={handleOpenExportModal} className="action-btn">Export Calendar</button>
            </div>

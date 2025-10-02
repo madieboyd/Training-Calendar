@@ -92,6 +92,7 @@ header h1 {
   font-style: italic;
   margin-bottom: 0.75rem;
   text-align: center;
+  font-weight: 600;
 }
 
 .calendar-controls {
@@ -199,6 +200,18 @@ header h1 {
 main {
   flex-grow: 1;
   padding: 1.5rem;
+}
+
+.app-status {
+    text-align: center;
+    font-size: 1.2rem;
+    padding: 3rem;
+    color: var(--status-scheduled);
+}
+
+.app-status.error {
+    color: var(--status-missed);
+    font-weight: bold;
 }
 
 .calendar {
@@ -312,6 +325,7 @@ main {
 .event-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 0.25rem; }
 .event-name { font-weight: 600; color: #333; margin-right: 0.5rem; transition: all 0.3s ease; word-break: break-word; font-size: 0.9rem; }
 .event-status-select { background-color: rgba(0, 0, 0, 0.05); border: none; border-radius: 4px; padding: 2px 6px; font-size: 0.7rem; font-weight: 500; text-transform: uppercase; cursor: pointer; -webkit-appearance: none; -moz-appearance: none; appearance: none; background-image: url('data:image/svg+xml;charset=US-ASCII,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22292.4%22%20height%3D%22292.4%22%3E%3Cpath%20fill%3D%22%23666666%22%20d%3D%22M287%2069.4a17.6%2017.6%200%200%200-13-5.4H18.4c-5%200-9.3%201.8-12.9%205.4A17.6%2017.6%200%200%200%200%2082.2c0%205%201.8%209.3%205.4%2012.9l128%20127.9c3.6%203.6%207.8%205.4%2012.8%205.4s9.2-1.8%2012.8-5.4L287%2095c3.5-3.5%205.4-7.8%205.4-12.8%200-5-1.9-9.2-5.5-12.8z%22%2F%3E%3C%2Fsvg%3E'); background-repeat: no-repeat; background-position: right 6px top 50%; background-size: .55em; padding-right: 1.5em; }
+.event-status-badge { background-color: rgba(0, 0, 0, 0.05); border-radius: 4px; padding: 2px 6px; font-size: 0.7rem; font-weight: 500; text-transform: uppercase; }
 .event-item.status-scheduled { border-left-color: var(--status-scheduled); }
 .event-item.status-complete { border-left-color: var(--status-complete); }
 .event-item.status-complete .event-name { text-decoration: line-through; opacity: 0.7; }
@@ -431,6 +445,7 @@ textarea.form-control { resize: vertical; }
   margin-top: 1.5rem;
 }
 .acknowledge-btn:hover { background-color: var(--edit-hover-color); }
+.acknowledge-btn:disabled { background-color: #4a5568; cursor: not-allowed; }
 
 
 .print-range-form, .export-form, .generate-form, .create-form {

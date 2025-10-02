@@ -4,31 +4,26 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Training Calendar</title>
-    
-    <!-- Load required font assets -->
+    <link rel="stylesheet" href="./index.css" />
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-
-    <!-- Framework Imports (These are fine, they use absolute external URLs) -->
 <script type="importmap">
 {
   "imports": {
     "react": "https://aistudiocdn.com/react@^19.1.1",
     "react-dom/": "https://aistudiocdn.com/react-dom@^19.1.1/",
-    "react/": "https://aistudiocdn.com/react@^19.1.1/"
+    "react/": "https://aistudiocdn.com/react@^19.1.1/",
+    "sql.js": "https://aistudiocdn.com/sql.js@^1.13.0"
   }
 }
 </script>
-
-    <!-- CRITICAL FIX 1: Use relative path for CSS (./index.css) -->
-    <link rel="stylesheet" href="./index.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/sql-wasm.js"></script>
+<link rel="stylesheet" href="/index.css">
 </head>
   <body>
-    <!-- This is the mount point for your React app -->
     <div id="root"></div>
-
-    <!-- CRITICAL FIX 2: Load ONLY the compiled bundle (./bundle.js) -->
-    <script src="./bundle.js"></script>
+    <script defer src="./bundle.js"></script>
+  <script type="module" src="/index.tsx"></script>
 </body>
 </html>
